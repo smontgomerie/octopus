@@ -17,7 +17,7 @@ class Octopus::Proxy
     @shards[:master] = ActiveRecord::Base.connection_pool_without_octopus()
     @config = ActiveRecord::Base.connection_pool_without_octopus.connection.instance_variable_get(:@config)
     @current_shard = :master
-    @lost_shard_retry_time = 10
+    @lost_shard_retry_time = 60
 
     if !config.nil? && config.has_key?("verify_connection")
       @verify_connection = config["verify_connection"]
@@ -119,8 +119,8 @@ class Octopus::Proxy
         end
         @shards[shard_name].connection()
       rescue
-        Rails.logger.error "Lost connection to shard: `#{shard_name}`"
-        time_to_retry = Time.new.to_i + @lost_shard_retry_time
+        Rails.logger.error "Lost connection to shard: `#{shard_name}`" if Rails.logger
+        time_to_retry = Time.new.to_i + lost_shard_retry_time
         @lost_shards.push({:shard => shard_name, :time_to_retry => time_to_retry})
         @slaves_list.delete shard_name
         if @slaves_list.length > 0
@@ -133,23 +133,30 @@ class Octopus::Proxy
     end
   end
 
-  # I'm probably never used.  I would need to be called higher up the stack (from a unicorn after the connection ends or something)
   def retry_lost_shards
     if @lost_shards.length > 0
       @lost_shards.each do |lost_shard|
-        if lost_shard[:time_to_retry] >= Time.new.to_i
-          connection_test = @shards[lost_shard[:shard]].verify_active_connections! 
-          if connection_test
-            Rails.logger.info "connection restored to shard: `#{shard_name}`"
+        if lost_shard[:time_to_retry] <= Time.new.to_i
+          pool = @shards[lost_shard[:shard]].verify_active_connections! 
+          if pool.length > 0
+            Rails.logger.info "connection restored to shard: `#{lost_shard[:shard]}`" if Rails.logger
             @slaves_list.push lost_shard[:shard]
-            @lost_shards.delete lost_shard[:shard]
+            @lost_shards.delete lost_shard
           else
-            Rails.logger.info "shard still down: `#{shard_name}`"
-            lost_shard[:time_to_retry] = Time.new.to_i + @lost_shard_retry_time
+            Rails.logger.info "shard still down: `#{lost_shard[:shard]}`" if Rails.logger
+            lost_shard[:time_to_retry] = Time.new.to_i + lost_shard_retry_time
           end
         end
       end
     end
+  end
+
+  def lost_shard_retry_time=(val)
+    @lost_shard_retry_time = val
+  end
+
+  def lost_shard_retry_time
+    @lost_shard_retry_time
   end
 
   def shard_name
