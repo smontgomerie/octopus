@@ -11,13 +11,13 @@ class Octopus::Proxy
 
   def initialize_shards(config)
     @shards = HashWithIndifferentAccess.new
-    @lost_shards = HashWithIndifferentAccess.new
+    @lost_shards = []
     @groups = {}
     @adapters = Set.new
     @shards[:master] = ActiveRecord::Base.connection_pool_without_octopus()
     @config = ActiveRecord::Base.connection_pool_without_octopus.connection.instance_variable_get(:@config)
     @current_shard = :master
-    @lost_shard_retry_time = 60
+    @lost_shard_retry_time = 10
 
     if !config.nil? && config.has_key?("verify_connection")
       @verify_connection = config["verify_connection"]
@@ -105,22 +105,23 @@ class Octopus::Proxy
 
   def select_connection
     if @verify_connection
-      connection_test = @shards[shard_name].verify_active_connections! 
-      # Rails 3.1 sets automatic_reconnect to false when it removes
-      # connection pool.  Octopus can potentially retain a reference to a closed
-      # connection pool.  Previously, that would work since the pool would just
-      # reconnect, but in Rails 3.1 the flag prevents this.
-      if Octopus.rails31?
-        if !@shards[shard_name].automatic_reconnect
-          @shards[shard_name].automatic_reconnect = true
+      begin
+        retry_lost_shards
+        conn = @shards[shard_name].verify_active_connections! 
+        # Rails 3.1 sets automatic_reconnect to false when it removes
+        # connection pool.  Octopus can potentially retain a reference to a closed
+        # connection pool.  Previously, that would work since the pool would just
+        # reconnect, but in Rails 3.1 the flag prevents this.
+        if Octopus.rails31?
+          if !@shards[shard_name].automatic_reconnect
+            @shards[shard_name].automatic_reconnect = true
+          end
         end
-      end
-      if connection_test
         @shards[shard_name].connection()
-      else
-        logger.info "Lost connection to shard #{shard_name}"
+      rescue
+        Rails.logger.error "Lost connection to shard: `#{shard_name}`"
         time_to_retry = Time.new.to_i + @lost_shard_retry_time
-        @lost_shards.push {:shard => shard_name, :time_to_retry => time_to_retry}
+        @lost_shards.push({:shard => shard_name, :time_to_retry => time_to_retry})
         @slaves_list.delete shard_name
         if @slaves_list.length > 0
           self.current_shard = @slaves_list[@slave_index = (@slave_index + 1) % @slaves_list.length]
@@ -129,27 +130,21 @@ class Octopus::Proxy
         end
         select_connection #try again...
       end
-    else
-      if Octopus.rails31?
-        if !@shards[shard_name].automatic_reconnect
-          @shards[shard_name].automatic_reconnect = true
-        end
-      end
-      @shards[shard_name].connection()
     end
   end
 
+  # I'm probably never used.  I would need to be called higher up the stack (from a unicorn after the connection ends or something)
   def retry_lost_shards
     if @lost_shards.length > 0
       @lost_shards.each do |lost_shard|
         if lost_shard[:time_to_retry] >= Time.new.to_i
           connection_test = @shards[lost_shard[:shard]].verify_active_connections! 
           if connection_test
-            logger.info "connection restored to shard #{shard_name}"
+            Rails.logger.info "connection restored to shard: `#{shard_name}`"
             @slaves_list.push lost_shard[:shard]
             @lost_shards.delete lost_shard[:shard]
           else
-            logger.info "shard #{shard_name} still down"
+            Rails.logger.info "shard still down: `#{shard_name}`"
             lost_shard[:time_to_retry] = Time.new.to_i + @lost_shard_retry_time
           end
         end
@@ -254,7 +249,7 @@ class Octopus::Proxy
     old_shard = self.current_shard
 
     begin
-      if current_model.replicated || @fully_replicated
+      if ( current_model.replicated || @fully_replicated ) && @slaves_list.length > 0
         self.current_shard = @slaves_list[@slave_index = (@slave_index + 1) % @slaves_list.length]
       else
         self.current_shard = :master
