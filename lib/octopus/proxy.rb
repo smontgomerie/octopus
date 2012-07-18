@@ -18,6 +18,7 @@ class Octopus::Proxy
     @config = ActiveRecord::Base.connection_pool_without_octopus.connection.instance_variable_get(:@config)
     @current_shard = :master
     @lost_shard_retry_time = 60
+    @shard_checks = {}
 
     if !config.nil? && config.has_key?("verify_connection")
       @verify_connection = config["verify_connection"]
@@ -106,7 +107,11 @@ class Octopus::Proxy
   def select_connection
       begin
         retry_lost_shards
-        conn = @shards[shard_name].verify_active_connections! if @verify_connection
+        @shard_checks[shard_name] = 0 if @shard_checks[shard_name].nil?
+        if @verify_connection || @shard_checks[shard_name] + @lost_shard_retry_time < Time.new().to_i
+          conn = @shards[shard_name].verify_active_connections! 
+          @shard_checks[shard_name] = Time.new().to_i
+        end
         # Rails 3.1 sets automatic_reconnect to false when it removes
         # connection pool.  Octopus can potentially retain a reference to a closed
         # connection pool.  Previously, that would work since the pool would just
