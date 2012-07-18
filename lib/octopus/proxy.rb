@@ -135,12 +135,13 @@ class Octopus::Proxy
     if @lost_shards.length > 0
       @lost_shards.each do |lost_shard|
         if lost_shard[:time_to_retry] <= Time.new.to_i
-          pool = @shards[lost_shard[:shard]].verify_active_connections! 
-          if pool.length > 0
+          begin
+            conn = @shards[lost_shard[:shard]].verify_active_connections! 
+            @shards[lost_shard[:shard]].connection()
             Rails.logger.info "connection restored to shard: `#{lost_shard[:shard]}`" if Rails.logger
             @slaves_list.push lost_shard[:shard]
             @lost_shards.delete lost_shard
-          else
+          rescue
             Rails.logger.info "shard still down: `#{lost_shard[:shard]}`" if Rails.logger
             lost_shard[:time_to_retry] = Time.new.to_i + lost_shard_retry_time
           end
