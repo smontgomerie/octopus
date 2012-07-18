@@ -104,10 +104,9 @@ class Octopus::Proxy
   end
 
   def select_connection
-    if @verify_connection
       begin
         retry_lost_shards
-        conn = @shards[shard_name].verify_active_connections! 
+        conn = @shards[shard_name].verify_active_connections! if @verify_connection
         # Rails 3.1 sets automatic_reconnect to false when it removes
         # connection pool.  Octopus can potentially retain a reference to a closed
         # connection pool.  Previously, that would work since the pool would just
@@ -130,7 +129,6 @@ class Octopus::Proxy
         end
         select_connection #try again...
       end
-    end
   end
 
   def retry_lost_shards
