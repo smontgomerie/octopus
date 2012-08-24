@@ -122,7 +122,12 @@ class Octopus::Proxy
           end
         end
         @shards[shard_name].connection()
-      rescue
+      rescue => e
+        if ( @slaves_list.length == 0 && self.current_shard == :master)
+          Rails.logger.error "Lost connection to shard: `#{shard_name}` and no other available shards. Throwing exception..." if Rails.logger
+          raise e
+        end
+
         Rails.logger.error "Lost connection to shard: `#{shard_name}`" if Rails.logger
         time_to_retry = Time.new.to_i + lost_shard_retry_time
         @lost_shards.push({:shard => shard_name, :time_to_retry => time_to_retry})
